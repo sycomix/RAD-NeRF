@@ -55,7 +55,7 @@ def evaluate(respth='./res/test_res', dspth='./data', cp='model_final_diss.pth')
 
     Path(respth).mkdir(parents=True, exist_ok=True)
 
-    print(f'[INFO] loading model...')
+    print('[INFO] loading model...')
     n_classes = 19
     net = BiSeNet(n_classes=n_classes)
     net.cuda()
@@ -84,7 +84,7 @@ def evaluate(respth='./res/test_res', dspth='./data', cp='model_final_diss.pth')
                 parsing = outputs.mean(0).cpu().numpy().argmax(0)
 
                 image_path = int(image_path[:-4])
-                image_path = str(image_path) + '.png'
+                image_path = f'{image_path}.png'
 
                 vis_parsing_maps(image, parsing, stride=1, save_im=True, save_path=osp.join(respth, image_path), img_size=ori_size)
 

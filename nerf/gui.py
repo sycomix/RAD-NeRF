@@ -169,61 +169,61 @@ class NeRFGUI:
 
     def test_step(self):
 
-        if self.need_update or self.spp < self.opt.max_spp:
-        
-            starter, ender = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
-            starter.record()
+        if not self.need_update and self.spp >= self.opt.max_spp:
+            return
+        starter, ender = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+        starter.record()
 
-            if self.playing:
-                try:
-                    data = next(self.loader)
-                except StopIteration:
-                    self.loader = iter(self.data_loader)
-                    data = next(self.loader)
-                
-                if self.opt.asr:
-                    # use the live audio stream
-                    data['auds'] = self.asr.get_next_feat()
+        if self.playing:
+            try:
+                data = next(self.loader)
+            except StopIteration:
+                self.loader = iter(self.data_loader)
+                data = next(self.loader)
 
-                outputs = self.trainer.test_gui_with_data(data, self.W, self.H)
+            if self.opt.asr:
+                # use the live audio stream
+                data['auds'] = self.asr.get_next_feat()
 
-                # sync local camera pose
-                self.cam.update_pose(data['poses_matrix'][0].detach().cpu().numpy())
-            
+            outputs = self.trainer.test_gui_with_data(data, self.W, self.H)
+
+            # sync local camera pose
+            self.cam.update_pose(data['poses_matrix'][0].detach().cpu().numpy())
+
+        else:
+            if self.audio_features is not None:
+                auds = get_audio_features(self.audio_features, self.opt.att, self.audio_idx)
             else:
-                if self.audio_features is not None:
-                    auds = get_audio_features(self.audio_features, self.opt.att, self.audio_idx)
-                else:
-                    auds = None
-                outputs = self.trainer.test_gui(self.cam.pose, self.cam.intrinsics, self.W, self.H, auds, self.eye_area, self.ind_index, self.bg_color, self.spp, self.downscale)
+                auds = None
+            outputs = self.trainer.test_gui(self.cam.pose, self.cam.intrinsics, self.W, self.H, auds, self.eye_area, self.ind_index, self.bg_color, self.spp, self.downscale)
 
-            ender.record()
-            torch.cuda.synchronize()
-            t = starter.elapsed_time(ender)
+        ender.record()
+        torch.cuda.synchronize()
+        t = starter.elapsed_time(ender)
 
-            # update dynamic resolution
-            if self.dynamic_resolution:
-                # max allowed infer time per-frame is 200 ms
-                full_t = t / (self.downscale ** 2)
-                downscale = min(1, max(1/4, math.sqrt(200 / full_t)))
-                if downscale > self.downscale * 1.2 or downscale < self.downscale * 0.8:
-                    self.downscale = downscale
+        # update dynamic resolution
+        if self.dynamic_resolution:
+            # max allowed infer time per-frame is 200 ms
+            full_t = t / (self.downscale ** 2)
+            downscale = min(1, max(1/4, math.sqrt(200 / full_t)))
+            if downscale > self.downscale * 1.2 or downscale < self.downscale * 0.8:
+                self.downscale = downscale
 
-            if self.need_update:
-                self.render_buffer = self.prepare_buffer(outputs)
-                self.spp = 1
-                self.need_update = False
-            else:
-                self.render_buffer = (self.render_buffer * self.spp + self.prepare_buffer(outputs)) / (self.spp + 1)
-                self.spp += 1
-            
-            if self.playing:
-                self.need_update = True
+        if self.need_update:
+            self.render_buffer = self.prepare_buffer(outputs)
+            self.spp = 1
+            self.need_update = False
+        else:
+            self.render_buffer = (self.render_buffer * self.spp + self.prepare_buffer(outputs)) / (self.spp + 1)
+            self.spp += 1
 
-            dpg.set_value("_log_infer_time", f'{t:.4f}ms ({int(1000/t)} FPS)')
-            dpg.set_value("_log_resolution", f'{int(self.downscale * self.W)}x{int(self.downscale * self.H)}')
-            dpg.set_value("_log_spp", self.spp)
-            dpg.set_value("_texture", self.render_buffer)
+        if self.playing:
+            self.need_update = True
+
+        dpg.set_value("_log_infer_time", f'{t:.4f}ms ({int(1000/t)} FPS)')
+        dpg.set_value("_log_resolution", f'{int(self.downscale * self.W)}x{int(self.downscale * self.H)}')
+        dpg.set_value("_log_spp", self.spp)
+        dpg.set_value("_texture", self.render_buffer)
 
         
     def register_dpg(self):
@@ -266,7 +266,7 @@ class NeRFGUI:
             with dpg.group(horizontal=True):
                 dpg.add_text("Infer time: ")
                 dpg.add_text("no data", tag="_log_infer_time")
-            
+
             with dpg.group(horizontal=True):
                 dpg.add_text("SPP: ")
                 dpg.add_text("1", tag="_log_spp")
@@ -316,14 +316,17 @@ class NeRFGUI:
                         dpg.bind_item_theme("_button_save", theme_button)
 
                         dpg.add_text("", tag="_log_ckpt")
-                    
+
                     # save mesh
                     with dpg.group(horizontal=True):
                         dpg.add_text("Marching Cubes: ")
 
                         def callback_mesh(sender, app_data):
                             self.trainer.save_mesh(resolution=256, threshold=10)
-                            dpg.set_value("_log_mesh", "saved " + f'{self.trainer.name}_{self.trainer.epoch}.ply')
+                            dpg.set_value(
+                                "_log_mesh",
+                                f'saved {self.trainer.name}_{self.trainer.epoch}.ply',
+                            )
                             self.trainer.epoch += 1 # use epoch to indicate different calls.
 
                         dpg.add_button(label="mesh", tag="_button_mesh", callback=callback_mesh)
@@ -334,16 +337,16 @@ class NeRFGUI:
                     with dpg.group(horizontal=True):
                         dpg.add_text("", tag="_log_train_log")
 
-            
+
             # rendering options
             with dpg.collapsing_header(label="Options", default_open=True):
-                
+
                 # playing
                 with dpg.group(horizontal=True):
                     dpg.add_text("Play: ")
 
                     def callback_play(sender, app_data):
-                        
+
                         if self.playing:
                             self.playing = False
                             dpg.configure_item("_button_play", label="start")
@@ -362,7 +365,7 @@ class NeRFGUI:
 
                         # clear queue button
                         def callback_clear_queue(sender, app_data):
-                            
+
                             self.asr.clear_queue()
                             self.need_update = True
 
@@ -388,7 +391,7 @@ class NeRFGUI:
                 def callback_change_mode(sender, app_data):
                     self.mode = app_data
                     self.need_update = True
-                
+
                 dpg.add_combo(('image', 'depth'), label='mode', default_value=self.mode, callback=callback_change_mode)
 
 
@@ -468,7 +471,7 @@ class NeRFGUI:
                 with dpg.group(horizontal=True):
                     dpg.add_slider_float(label="z", width=150, min_value=-self.opt.bound, max_value=0, format="%.2f", default_value=-self.opt.bound, callback=callback_set_aabb, user_data=2)
                     dpg.add_slider_float(label="", width=150, min_value=0, max_value=self.opt.bound, format="%.2f", default_value=self.opt.bound, callback=callback_set_aabb, user_data=5)
-                
+
 
             # debug info
             if self.debug:
@@ -530,7 +533,7 @@ class NeRFGUI:
             dpg.add_mouse_wheel_handler(callback=callback_camera_wheel_scale)
             dpg.add_mouse_drag_handler(button=dpg.mvMouseButton_Middle, callback=callback_camera_drag_pan)
 
-        
+
         dpg.create_viewport(title='RAD-NeRF', width=1080, height=720, resizable=True)
 
         ### global theme
@@ -540,7 +543,7 @@ class NeRFGUI:
                 dpg.add_theme_style(dpg.mvStyleVar_WindowPadding, 0, 0, category=dpg.mvThemeCat_Core)
                 dpg.add_theme_style(dpg.mvStyleVar_FramePadding, 0, 0, category=dpg.mvThemeCat_Core)
                 dpg.add_theme_style(dpg.mvStyleVar_CellPadding, 0, 0, category=dpg.mvThemeCat_Core)
-        
+
         dpg.bind_item_theme("_primary_window", theme_no_padding)
 
         dpg.setup_dearpygui()

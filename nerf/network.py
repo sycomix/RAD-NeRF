@@ -74,10 +74,14 @@ class MLP(nn.Module):
         self.dim_hidden = dim_hidden
         self.num_layers = num_layers
 
-        net = []
-        for l in range(num_layers):
-            net.append(nn.Linear(self.dim_in if l == 0 else self.dim_hidden, self.dim_out if l == num_layers - 1 else self.dim_hidden, bias=False))
-
+        net = [
+            nn.Linear(
+                self.dim_in if l == 0 else self.dim_hidden,
+                self.dim_out if l == num_layers - 1 else self.dim_hidden,
+                bias=False,
+            )
+            for l in range(num_layers)
+        ]
         self.net = nn.ModuleList(net)
     
     def forward(self, x):
@@ -232,10 +236,9 @@ class NeRFNetwork(NeRFRenderer):
         if enc_a is None:
             ambient = torch.zeros_like(x[:, :self.ambient_dim])
             enc_x = self.encoder(x, bound=self.bound)
-            enc_w = self.encoder_ambient(ambient, bound=1)
         else:
             
-            enc_a = enc_a.repeat(x.shape[0], 1) 
+            enc_a = enc_a.repeat(x.shape[0], 1)
             enc_x = self.encoder(x, bound=self.bound)
 
             # ender.record(); torch.cuda.synchronize(); curr_time = starter.elapsed_time(ender); print(f"enocoder_deform = {curr_time}"); starter.record()
@@ -245,11 +248,7 @@ class NeRFNetwork(NeRFRenderer):
             ambient = self.ambient_net(ambient).float()
             ambient = torch.tanh(ambient) # map to [-1, 1]
 
-            # ender.record(); torch.cuda.synchronize(); curr_time = starter.elapsed_time(ender); print(f"de-an net = {curr_time}"); starter.record()
-
-            # sigma
-            enc_w = self.encoder_ambient(ambient, bound=1)
-
+        enc_w = self.encoder_ambient(ambient, bound=1)
         # ender.record(); torch.cuda.synchronize(); curr_time = starter.elapsed_time(ender); print(f"encoder = {curr_time}"); starter.record()
 
         if e is not None:
@@ -272,10 +271,10 @@ class NeRFNetwork(NeRFRenderer):
             h = torch.cat([enc_d, geo_feat, c.repeat(x.shape[0], 1)], dim=-1)
         else:
             h = torch.cat([enc_d, geo_feat], dim=-1)
-        
+
         h = self.color_net(h)
         # ender.record(); torch.cuda.synchronize(); curr_time = starter.elapsed_time(ender); print(f"color_net = {curr_time}"); starter.record()
-        
+
         # sigmoid activation for rgb
         color = torch.sigmoid(h)
 
@@ -288,10 +287,9 @@ class NeRFNetwork(NeRFRenderer):
         if enc_a is None:
             ambient = torch.zeros_like(x[:, :self.ambient_dim])
             enc_x = self.encoder(x, bound=self.bound)
-            enc_w = self.encoder_ambient(ambient, bound=1)
         else:
 
-            enc_a = enc_a.repeat(x.shape[0], 1) 
+            enc_a = enc_a.repeat(x.shape[0], 1)
             enc_x = self.encoder(x, bound=self.bound)
 
             # ender.record(); torch.cuda.synchronize(); curr_time = starter.elapsed_time(ender); print(f"enocoder_deform = {curr_time}"); starter.record()
@@ -301,11 +299,7 @@ class NeRFNetwork(NeRFRenderer):
             ambient = self.ambient_net(ambient).float()
             ambient = torch.tanh(ambient) # map to [-1, 1]
 
-            # ender.record(); torch.cuda.synchronize(); curr_time = starter.elapsed_time(ender); print(f"de-an net = {curr_time}"); starter.record()
-
-            # sigma
-            enc_w = self.encoder_ambient(ambient, bound=1)
-
+        enc_w = self.encoder_ambient(ambient, bound=1)
         # ender.record(); torch.cuda.synchronize(); curr_time = starter.elapsed_time(ender); print(f"encoder = {curr_time}"); starter.record()
 
         if e is not None:
@@ -355,7 +349,10 @@ class NeRFNetwork(NeRFRenderer):
         if self.individual_dim > 0:
             params.append({'params': self.individual_codes, 'lr': lr_net, 'weight_decay': wd})
         if self.train_camera:
-            params.append({'params': self.camera_dT, 'lr': 1e-5, 'weight_decay': 0})
-            params.append({'params': self.camera_dR, 'lr': 1e-5, 'weight_decay': 0})
-
+            params.extend(
+                (
+                    {'params': self.camera_dT, 'lr': 1e-5, 'weight_decay': 0},
+                    {'params': self.camera_dR, 'lr': 1e-5, 'weight_decay': 0},
+                )
+            )
         return params

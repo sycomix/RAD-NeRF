@@ -34,9 +34,9 @@ if __name__ == '__main__':
 
     ### network backbone options
     parser.add_argument('--fp16', action='store_true', help="use amp mixed precision training")
-    
+
     parser.add_argument('--lambda_amb', type=float, default=0.1, help="lambda for ambient loss")
-    
+
     parser.add_argument('--bg_img', type=str, default='', help="background image")
     parser.add_argument('--fbg', action='store_true', help="frame-wise bg")
     parser.add_argument('--exp_eye', action='store_true', help="explicitly control the eyes")
@@ -111,27 +111,27 @@ if __name__ == '__main__':
     if opt.O:
         opt.fp16 = True
         opt.exp_eye = True
-    
+
     if opt.test:
         opt.smooth_path = True
         opt.smooth_eye = True
         opt.smooth_lips = True
-    
+
     opt.cuda_ray = True
     # assert opt.cuda_ray, "Only support CUDA ray mode."
 
     if opt.patch_size > 1:
         # assert opt.patch_size > 16, "patch_size should > 16 to run LPIPS loss."
         assert opt.num_rays % (opt.patch_size ** 2) == 0, "patch_size ** 2 should be dividable by num_rays."
-    
+
     if opt.finetune_lips:
         # do not update density grid in finetune stage
         opt.update_extra_interval = 1e9
-    
+
     from nerf.network import NeRFNetwork
 
     print(opt)
-    
+
     seed_everything(opt.seed)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -140,7 +140,7 @@ if __name__ == '__main__':
 
     # manually load state dict for head
     if opt.torso and opt.head_ckpt != '':
-        
+
         model_dict = torch.load(opt.head_ckpt, map_location='cpu')['model']
 
         missing_keys, unexpected_keys = model.load_state_dict(model_dict, strict=False)
@@ -156,13 +156,13 @@ if __name__ == '__main__':
                 # print(f'[INFO] freeze {k}, {v.shape}')
                 v.requires_grad = False
 
-    
+
     # print(model)
 
     criterion = torch.nn.MSELoss(reduction='none')
 
     if opt.test:
-        
+
         if opt.gui:
             metrics = [] # use no metric in GUI for faster initialization...
         else:
@@ -189,16 +189,16 @@ if __name__ == '__main__':
             # we still need test_loader to provide audio features for testing.
             with NeRFGUI(opt, trainer, test_loader) as gui:
                 gui.render()
-        
+
         else:
-            
+
             ### evaluate metrics (slow)
             if test_loader.has_gt:
                 trainer.evaluate(test_loader)
 
             ### test and save video (fast)  
             trainer.test(test_loader)
-    
+
     else:
 
         optimizer = lambda model: torch.optim.Adam(model.get_params(opt.lr, opt.lr_net), betas=(0.9, 0.99), eps=1e-15)
@@ -219,14 +219,14 @@ if __name__ == '__main__':
             scheduler = lambda optimizer: optim.lr_scheduler.LambdaLR(optimizer, lambda iter: 0.1 ** (iter / opt.iters))
 
         metrics = [PSNRMeter(), LPIPSMeter(device=device)]
-        
-        eval_interval = max(1, int(5000 / len(train_loader)))
+
+        eval_interval = max(1, 5000 // len(train_loader))
         trainer = Trainer('ngp', opt, model, device=device, workspace=opt.workspace, optimizer=optimizer, criterion=criterion, ema_decay=0.95, fp16=opt.fp16, lr_scheduler=scheduler, scheduler_update_every_step=True, metrics=metrics, use_checkpoint=opt.ckpt, eval_interval=eval_interval)
 
         if opt.gui:
             with NeRFGUI(opt, trainer, train_loader) as gui:
                 gui.render()
-        
+
         else:
             valid_loader = NeRFDataset(opt, device=device, type='val', downscale=1).dataloader()
 
@@ -240,7 +240,7 @@ if __name__ == '__main__':
 
             # also test
             test_loader = NeRFDataset(opt, device=device, type='test').dataloader()
-            
+
             if test_loader.has_gt:
                 trainer.evaluate(test_loader) # blender has gt, so evaluate it.
 

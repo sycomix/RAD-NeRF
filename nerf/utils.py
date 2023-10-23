@@ -241,8 +241,7 @@ def get_bg_coords(H, W, device):
     X = torch.arange(H, device=device) / (H - 1) * 2 - 1 # in [-1, 1]
     Y = torch.arange(W, device=device) / (W - 1) * 2 - 1 # in [-1, 1]
     xs, ys = custom_meshgrid(X, Y)
-    bg_coords = torch.cat([xs.reshape(-1, 1), ys.reshape(-1, 1)], dim=-1).unsqueeze(0) # [1, H*W, 2], in [-1, 1]
-    return bg_coords
+    return torch.cat([xs.reshape(-1, 1), ys.reshape(-1, 1)], dim=-1).unsqueeze(0)
 
 
 @torch.cuda.amp.autocast(enabled=False)
@@ -269,8 +268,6 @@ def get_rays(poses, intrinsics, H, W, N=-1, patch_size=1, rect=None):
     i = i.t().reshape([1, H*W]).expand([B, H*W]) + 0.5
     j = j.t().reshape([1, H*W]).expand([B, H*W]) + 0.5
 
-    results = {}
-
     if N > 0:
         N = min(N, H*W)
 
@@ -292,7 +289,7 @@ def get_rays(poses, intrinsics, H, W, N=-1, patch_size=1, rect=None):
             inds = inds[:, 0] * W + inds[:, 1] # [N], flatten
 
             inds = inds.expand([B, N])
-        
+
         # only get rays in the specified rect
         elif rect is not None:
             # assert B == 1
@@ -312,11 +309,8 @@ def get_rays(poses, intrinsics, H, W, N=-1, patch_size=1, rect=None):
 
     else:
         inds = torch.arange(H*W, device=device).expand([B, H*W])
-    
-    results['i'] = i
-    results['j'] = j
-    results['inds'] = inds
 
+    results = {'i': i, 'j': j, 'inds': inds}
     zs = torch.ones_like(i)
     xs = (i - cx) / fx * zs
     ys = (j - cy) / fy * zs
@@ -450,7 +444,7 @@ class LPIPSMeter:
 
     def prepare_inputs(self, *inputs):
         outputs = []
-        for i, inp in enumerate(inputs):
+        for inp in inputs:
             inp = inp.permute(0, 3, 1, 2).contiguous() # [B, 3, H, W]
             inp = inp.to(self.device)
             outputs.append(inp)
@@ -529,7 +523,7 @@ class LMDMeter:
 
     def prepare_inputs(self, *inputs):
         outputs = []
-        for i, inp in enumerate(inputs):
+        for inp in inputs:
             inp = inp.detach().cpu().numpy()
             inp = (inp * 255).astype(np.uint8)
             outputs.append(inp)
@@ -675,9 +669,11 @@ class Trainer(object):
             self.ckpt_path = os.path.join(self.workspace, 'checkpoints')
             self.best_path = f"{self.ckpt_path}/{self.name}.pth"
             os.makedirs(self.ckpt_path, exist_ok=True)
-            
+
         self.log(f'[INFO] Trainer: {self.name} | {self.time_stamp} | {self.device} | {"fp16" if self.fp16 else "fp32"} | {self.workspace}')
-        self.log(f'[INFO] #parameters: {sum([p.numel() for p in model.parameters() if p.requires_grad])}')
+        self.log(
+            f'[INFO] #parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad)}'
+        )
 
         if self.workspace is not None:
             if self.use_checkpoint == "scratch":
@@ -726,25 +722,30 @@ class Trainer(object):
         auds = data['auds'] # [B, 29, 16]
         index = data['index'] # [B]
 
-        if not self.opt.torso:
-            rgb = data['images'] # [B, N, 3]
-        else:
-            rgb = data['bg_torso_color']
-    
+        rgb = data['images'] if not self.opt.torso else data['bg_torso_color']
         B, N, C = rgb.shape
 
         if self.opt.color_space == 'linear':
             rgb[..., :3] = srgb_to_linear(rgb[..., :3])
-         
+
         bg_color = data['bg_color']
-        
-        outputs = self.model.render(rays_o, rays_d, auds, bg_coords, poses, eye=eye, index=index, staged=False, bg_color=bg_color, perturb=True, force_all_rays=False if (self.opt.patch_size <= 1 and not self.opt.train_camera) else True, **vars(self.opt))
 
-        if not self.opt.torso:
-            pred_rgb = outputs['image']
-        else:
-            pred_rgb = outputs['torso_color']
+        outputs = self.model.render(
+            rays_o,
+            rays_d,
+            auds,
+            bg_coords,
+            poses,
+            eye=eye,
+            index=index,
+            staged=False,
+            bg_color=bg_color,
+            perturb=True,
+            force_all_rays=bool(self.opt.patch_size > 1 or self.opt.train_camera),
+            **vars(self.opt)
+        )
 
+        pred_rgb = outputs['image'] if not self.opt.torso else outputs['torso_color']
         # MSE loss
         loss = self.criterion(pred_rgb, rgb).mean(-1) # [B, N, 3] --> [B, N]
 
@@ -764,7 +765,7 @@ class Trainer(object):
 
             # LPIPS loss
             loss = loss + 0.01 * self.criterion_lpips(pred_rgb, rgb)
-        
+
         # flip every step... if finetune lips
         if self.flip_finetune_lips:
             self.opt.finetune_lips = not self.opt.finetune_lips
@@ -786,14 +787,11 @@ class Trainer(object):
         # entropy to encourage weights_sum to be 0 or 1.
         if self.opt.torso:
             alphas = outputs['torso_alpha'].clamp(1e-5, 1 - 1e-5)
-            # alphas = alphas ** 2 # skewed entropy, favors 0 over 1
-            loss_ws = - alphas * torch.log2(alphas) - (1 - alphas) * torch.log2(1 - alphas)
-            loss = loss + 1e-4 * loss_ws.mean()
-
         else:
             alphas = outputs['weights_sum'].clamp(1e-5, 1 - 1e-5)
-            loss_ws = - alphas * torch.log2(alphas) - (1 - alphas) * torch.log2(1 - alphas)
-            loss = loss + 1e-4 * loss_ws.mean()
+        # alphas = alphas ** 2 # skewed entropy, favors 0 over 1
+        loss_ws = - alphas * torch.log2(alphas) - (1 - alphas) * torch.log2(1 - alphas)
+        loss = loss + 1e-4 * loss_ws.mean()
 
         # ambient loss (regions out of face should be static)
         if not self.opt.torso:
@@ -855,11 +853,7 @@ class Trainer(object):
         else:
             eye = data['eye'] # [B, 1]
 
-        if bg_color is not None:    
-            bg_color = bg_color.to(self.device)
-        else:
-            bg_color = data['bg_color']
-
+        bg_color = data['bg_color'] if bg_color is None else bg_color.to(self.device)
         outputs = self.model.render(rays_o, rays_d, auds, bg_coords, poses, eye=eye, index=index, staged=True, bg_color=bg_color, perturb=perturb, **vars(self.opt))
 
         pred_rgb = outputs['image'].reshape(-1, H, W, 3)
@@ -888,7 +882,7 @@ class Trainer(object):
         mesh = trimesh.Trimesh(vertices, triangles, process=False) # important, process=True leads to seg fault...
         mesh.export(save_path)
 
-        self.log(f"==> Finished saving mesh.")
+        self.log("==> Finished saving mesh.")
 
     ### ------------------------------
 
@@ -929,7 +923,7 @@ class Trainer(object):
             name = f'{self.name}_ep{self.epoch:04d}'
 
         os.makedirs(save_path, exist_ok=True)
-        
+
         self.log(f"==> Start Test, save results to {save_path}")
 
         pbar = tqdm.tqdm(total=len(loader) * loader.batch_size, bar_format='{percentage:3.0f}% {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]')
@@ -940,10 +934,10 @@ class Trainer(object):
         with torch.no_grad():
 
             for i, data in enumerate(loader):
-                
+
                 with torch.cuda.amp.autocast(enabled=self.fp16):
                     preds, preds_depth = self.test_step(data)                
-                
+
                 path = os.path.join(save_path, f'{name}_{i:04d}_rgb.png')
                 path_depth = os.path.join(save_path, f'{name}_{i:04d}_depth.png')
 
@@ -970,7 +964,7 @@ class Trainer(object):
         all_preds = np.stack(all_preds, axis=0)
         imageio.mimwrite(os.path.join(save_path, f'{name}.mp4'), all_preds, fps=25, quality=8, macro_block_size=1)
 
-        self.log(f"==> Finished Test.")
+        self.log("==> Finished Test.")
     
     # [GUI] just train for 16 steps, without any other overhead that may slow down rendering.
     def train_gui(self, train_loader, step=16):
@@ -978,7 +972,7 @@ class Trainer(object):
         self.model.train()
 
         total_loss = torch.tensor([0], dtype=torch.float32, device=self.device)
-        
+
         loader = iter(train_loader)
 
         # mark untrained grid
@@ -986,7 +980,7 @@ class Trainer(object):
             self.model.mark_untrained_grid(train_loader._data.poses, train_loader._data.intrinsics)
 
         for _ in range(step):
-            
+
             # mimic an infinite loop dataloader (in case the total dataset is smaller than step)
             try:
                 data = next(loader)
@@ -998,18 +992,18 @@ class Trainer(object):
             if self.model.cuda_ray and self.global_step % self.opt.update_extra_interval == 0:
                 with torch.cuda.amp.autocast(enabled=self.fp16):
                     self.model.update_extra_state()
-            
+
             self.global_step += 1
 
             self.optimizer.zero_grad()
 
             with torch.cuda.amp.autocast(enabled=self.fp16):
                 preds, truths, loss = self.train_step(data)
-         
+
             self.scaler.scale(loss).backward()
             self.scaler.step(self.optimizer)
             self.scaler.update()
-            
+
             if self.scheduler_update_every_step:
                 self.lr_scheduler.step()
 
@@ -1026,12 +1020,10 @@ class Trainer(object):
             else:
                 self.lr_scheduler.step()
 
-        outputs = {
+        return {
             'loss': average_loss,
             'lr': self.optimizer.param_groups[0]['lr'],
         }
-        
-        return outputs
     
     # [GUI] test on a single image
     def test_gui(self, pose, intrinsics, W, H, auds, eye=None, index=0, bg_color=None, spp=1, downscale=1):
@@ -1063,7 +1055,7 @@ class Trainer(object):
             'poses': convert_poses(pose),
             'bg_coords': bg_coords,
         }
-        
+
         self.model.eval()
 
         if self.ema is not None:
@@ -1091,12 +1083,10 @@ class Trainer(object):
         pred = preds[0].detach().cpu().numpy()
         pred_depth = preds_depth[0].detach().cpu().numpy()
 
-        outputs = {
+        return {
             'image': pred,
             'depth': pred_depth,
         }
-
-        return outputs
 
     # [GUI] test with provided data
     def test_gui_with_data(self, data, W, H):
@@ -1126,12 +1116,10 @@ class Trainer(object):
         pred = preds[0].detach().cpu().numpy()
         pred_depth = preds_depth[0].detach().cpu().numpy()
 
-        outputs = {
+        return {
             'image': pred,
             'depth': pred_depth,
         }
-
-        return outputs
 
     def train_one_epoch(self, loader):
         self.log(f"==> Start Training Epoch {self.epoch}, lr={self.optimizer.param_groups[0]['lr']:.6f} ...")

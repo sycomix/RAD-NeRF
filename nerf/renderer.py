@@ -42,9 +42,7 @@ def sample_pdf(bins, weights, n_samples, det=False):
     denom = (cdf_g[..., 1] - cdf_g[..., 0])
     denom = torch.where(denom < 1e-5, torch.ones_like(denom), denom)
     t = (u - cdf_g[..., 0]) / denom
-    samples = bins_g[..., 0] + t * (bins_g[..., 1] - bins_g[..., 0])
-
-    return samples
+    return bins_g[..., 0] + t * (bins_g[..., 1] - bins_g[..., 0])
 
 
 def plot_pointcloud(pc, color=None):
@@ -509,29 +507,23 @@ class NeRFRenderer(nn.Module):
         # return: pred_rgb: [B, N, 3]
 
         _run = self.run_cuda
-        
+
         B, N = rays_o.shape[:2]
+        if not staged or self.cuda_ray:
+            return _run(rays_o, rays_d, auds, bg_coords, poses, **kwargs)
+
         device = rays_o.device
 
-        # never stage when cuda_ray
-        if staged and not self.cuda_ray:
-            depth = torch.empty((B, N), device=device)
-            image = torch.empty((B, N, 3), device=device)
+        depth = torch.empty((B, N), device=device)
+        image = torch.empty((B, N, 3), device=device)
 
-            for b in range(B):
-                head = 0
-                while head < N:
-                    tail = min(head + max_ray_batch, N)
-                    results_ = _run(rays_o[b:b+1, head:tail], rays_d[b:b+1, head:tail], auds[b:b+1], bg_coords[:, head:tail], poses[b:b+1], **kwargs)
-                    depth[b:b+1, head:tail] = results_['depth']
-                    image[b:b+1, head:tail] = results_['image']
-                    head += max_ray_batch
-            
-            results = {}
-            results['depth'] = depth
-            results['image'] = image
+        for b in range(B):
+            head = 0
+            while head < N:
+                tail = min(head + max_ray_batch, N)
+                results_ = _run(rays_o[b:b+1, head:tail], rays_d[b:b+1, head:tail], auds[b:b+1], bg_coords[:, head:tail], poses[b:b+1], **kwargs)
+                depth[b:b+1, head:tail] = results_['depth']
+                image[b:b+1, head:tail] = results_['image']
+                head += max_ray_batch
 
-        else:
-            results = _run(rays_o, rays_d, auds, bg_coords, poses, **kwargs)
-
-        return results
+        return {'depth': depth, 'image': image}
